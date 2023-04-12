@@ -1,0 +1,91 @@
+stages:
+  - lint
+  - test
+  - build
+  - deploy
+
+variables:
+  AWS_DEFAULT_REGION: us-east-1
+  BUCKET_NAME: apollo-react-theme.apollo.iqvia.io
+  DIST_ID: E4YLVHJXIAA2L
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - node_modules/
+
+lint:
+  stage: lint
+  image: node:latest
+  script:
+    - yarn
+    - yarn lint
+  tags:
+    - shared
+    - linux
+
+# running docker-compose related gitlab discussion: https://gitlab.com/gitlab-org/gitlab-foss/-/issues/30426
+test:
+  stage: test
+  image: docker:latest
+  variables:
+    DOCKER_DRIVER: overlay  
+  services:
+    - docker:dind
+  artifacts:
+    when: on_failure
+    name: "Visual-Regression-Differences-$CI_COMMIT_REF_NAME"
+    paths:
+     - test_results/
+    expire_in: 1 week
+  before_script:
+    - docker info
+    - apk update
+    - apk upgrade
+    - apk add curl jq python3 python3-dev build-base libffi-dev libressl-dev gettext
+    - curl -O https://bootstrap.pypa.io/get-pip.py
+    - python3 get-pip.py
+    - pip install docker-compose    
+    - apk add make
+    - mkdir test_results
+  script:
+    - make ci_test
+  timeout: 30m
+  tags:
+    - shared
+    - linux
+
+build:
+  stage: build
+  image: node:latest
+  artifacts:
+    paths:
+      - build
+  script:
+    - apt-get update
+    - apt-get upgrade -y
+    - yarn
+    - yarn install
+    - CI="false" yarn build
+  tags:
+    - shared
+    - linux
+
+deploy:
+  stage: deploy
+  image: "python:latest"
+  only:
+    - master
+  dependencies:
+    - build
+  before_script:
+    - pip install awscli
+  script:
+    - apt-get update
+    - apt-get upgrade -y
+    - aws s3 sync build/. s3://${BUCKET_NAME} --delete
+    - aws s3 website s3://${BUCKET_NAME}/ --index-document index.html --error-document index.html
+    - aws cloudfront create-invalidation --distribution-id ${DIST_ID} --paths '/*'
+  tags:
+    - shared
+    - linux
